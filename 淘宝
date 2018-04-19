@@ -1,0 +1,135 @@
+# 先进行分析，例如淘宝请求，
+# 搜索关键字，利用selenium驱动浏览器搜索关键字，得到查询后的商品列表
+# 分析页码然后翻页
+# 分析商品内容
+# 最后存储到mongodb
+
+import re
+from selenium.webdriver.support import expected_conditions as EC
+from selenium import webdriver
+from selenium.common.exceptions import TimeoutException
+from pyquery import PyQuery as pq
+browser = webdriver.Chrome()
+from selenium.webdriver.common.by import By
+from selenium.webdriver.support.ui import WebDriverWait
+from TAOBAO import *
+import pymongo
+
+client = pymongo.MongoClient(MONGO_URL)
+db = client[MONGO_DB]
+
+# 最终的处理是将browser 准便成phantomjs进行加载
+# 上述三行是selenium的请求等待时间，并进行，
+# 通过输入想要请求的数据，自动进行点击拾取
+
+browser = webdriver.PhantomJS()
+wait = WebDriverWait(browser, 10)
+
+
+def search():
+    print("正在搜索")
+    # wait 在没有找到结果会抛出一个异常
+    try:
+        # 引用try抛出异常
+        browser.get("https://www.taobao.com")
+        a_input = wait.until(
+            EC.presence_of_element_located((By.CSS_SELECTOR, "#q"))
+        )
+        # EC -后面的申请，加载目标，通过一个选择器，By.CSS_SELECTOR,"html中的selector"
+        # waits 等待时间 selenium官方文档
+        # 查看输入框
+        a_input.send_keys("美食")
+        submit = wait.until(
+            EC.element_to_be_clickable((By.CSS_SELECTOR, "#J_SearchForm > button"))
+        )
+        # 自动点击，然年提交申请
+        # a_input.send_keys("美食")
+        submit.click()
+        # 输入搜索操作
+        # 接下来模拟翻页
+        total = wait.until(
+            EC.presence_of_element_located((By.CSS_SELECTOR, "#mainsrp-pager > div > div > div > div.total")))
+        return total.text
+    except TimeoutException:
+        return search()
+
+
+# 如果没有请求成，直接重新请求一次就行了
+# 开启循环 判断时是否加载到下一页，只需要输入页数，如果没有加载，重新输入即可
+def next_page(page_number):
+    print("当前翻页多少",page_number)
+    try:
+        # 先拿到输入框页码，在拿到去顶按钮
+        a_input = wait.until(
+            EC.presence_of_element_located((By.CSS_SELECTOR, "#mainsrp-pager > div > div > div > div.form > input"))
+        )
+        submit = wait.until(
+            EC.element_to_be_clickable(
+                (By.CSS_SELECTOR, "#mainsrp-pager > div > div > div > div.form > span.btn.J_Submit"))
+        )
+        a_input.clear()
+        # 先进性清除操作
+        a_input.send_keys(page_number)
+        # 输入页数
+        submit.click()
+        # 提交点击
+        # 判断当前高亮的页码数是否对应，html页码的
+        wait.until(EC.text_to_be_present_in_element(
+            (By.CSS_SELECTOR, "#mainsrp-pager > div > div > div > ul > li.item.active > span"), str(page_number)))
+    # str(page) 判定，当前传入的参数，使用字符串
+        get_products()
+    except TimeoutException:
+        next_page(page_number)
+
+def get_products():
+    # 定义一个解析的方法
+    wait.until(EC.presence_of_all_elements_located((By.CSS_SELECTOR,"mainsrp-itemlist .items .item")))
+    # 添加了以及#代表案例
+    # 拿到网页的源代码
+    html = browser.page_source
+    # 传入这个html
+    doc = pq(html)
+    # 把cs选择器复制成一个items
+    items = doc("mainsrp-itemlist .items .item").items()
+    # 调用一个items方法可以得到所有item所有选择的内容
+    for item in items:
+        # 分析items里面的所有内容
+        product = {
+            "image":item.find('.pic .img').attr('src'),
+            "price":item.find('.price').text(),
+            "deal":item.find('.deal-cnt').text()[:-3],
+            "title":item.find('.title').text(),
+            "shop":item.find('.shop').text(),
+            "location":item.find('.location').text()
+        }
+        print(product)
+        # 调商品的信息，需要在页面出现以后才可以
+        save_to_mongo(product)
+
+def save_to_mongo(result):
+    # 参数是这个字典
+    # 因为在保存的过程中，没有办法确定以定争取的输出
+    try:
+        if db[MONGO_DB].insert(result):
+            print('保存到mongodb成功',result)
+    except Exception:
+        print('存储到mongo失败',result)
+    # 在刷新完页面之后进行存储，所以在输出产品，在进行保存，通过上面的函数进行存储
+
+def main():
+    try:
+        total = search()
+        # 因为search是本身就带有return的所以这里需要用递归
+        total = int(re.compile('(\d+)').search(total).group(1))
+        print(total)
+        for i in range(2, total + 1):
+            next_page(i)
+            # 刷新的页面应该从第二页开始，
+    except Exception:
+        print("出错啦")
+    finally:
+        browser.close()
+
+
+if __name__ == '__main__':
+    main()
